@@ -1,0 +1,70 @@
+#
+# Builds and runs the test DLLs using 'dotnet test' 
+#
+name: dotnet-test-dlls
+
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup .NET Core
+      uses: actions/setup-dotnet@v1
+      with:
+        dotnet-version: 3.1.101
+
+    - name: Install dependencies
+      run: dotnet restore Yeha.sln
+      working-directory: src
+
+    - name: Build and Publish
+      run: dotnet publish --no-restore --configuration Release Yeha.sln
+      working-directory: src
+
+    - name: Unit Tests (dotnet test)
+      run: dotnet test Yeha.Api.UnitTests.dll
+      working-directory: src/Yeha.Api.UnitTests/bin/Release/netcoreapp3.1/publish
+
+    - name: Integration Tests (dotnet test)
+      run: dotnet test Yeha.Api.IntegrationTests.dll
+      working-directory: src/Yeha.Api.IntegrationTests/bin/Release/netcoreapp3.1/publish
+
+    - name: Acceptance Tests (dotnet test)
+      run: dotnet test Yeha.Api.AcceptanceTests.dll
+      working-directory: src/Yeha.Api.AcceptanceTests/bin/Release/netcoreapp3.1/publish
+
+    - name: Build API Container
+      run: docker build -f azure-devops/Dockerfile src -t yeha-api:candidate
+      shell: pwsh
+
+    - name: Start API Container
+      run: docker run -d -p 5001:80 yeha-api:candidate    
+      shell: pwsh
+
+    - name: Wait for Container
+      run: ./azure-devops/wait-until-uri-is-ready.ps1 -TimeoutInSeconds 60 -Uri http://localhost:5001/api/diagnostics/ready -ExpectStatusCode 200 -Verbose
+      shell: pwsh
+
+    - name: Run Acceptance Tests against container
+      env:
+        YEHA_TEST_EXECUTION_CONTEXT: CI
+      run: mkdir $($env:HOME)/testResults |
+        dotnet test ./src/Yeha.Api.AcceptanceTests/bin/Release/netcoreapp3.1/publish/Yeha.Api.AcceptanceTests.dll --logger:"trx;LogFileName=$($env:HOME)/testResults/Container-Acceptance.trx"
+      shell: pwsh
+
+    - name: Dump filesystem contents
+      run: Get-ChildItem -Recurse
+      shell: pwsh    
+
+    - name: Publish Acceptance Test Results
+      if: ${{ success() || failure() }}
+      uses: actions/upload-artifact@v2
+      with:
+        name: Acceptance-Test-Results
+        path: ~/testResults
